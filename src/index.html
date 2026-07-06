@@ -1432,6 +1432,25 @@ function buildTargetDropdown(){
   return html;
 }
 
+// Shared list of manual leader override options (LEADER_DB types not tied to a
+// parsed roster) — used by both the Combat Sim leader selector and the Live
+// Action "add opponent unit" picker.
+function manualLeaderOptionsHtml(){
+  return `<optgroup label="-- Space Marines --">
+    <option value="manual:lieutenant">Lieutenant (Tactical Precision: LETHAL HITS)</option>
+    <option value="manual:chaplain">Chaplain (Spiritual Leader: re-roll hit 1s melee)</option>
+    <option value="manual:captain">Captain (Rites of Battle: re-roll hit 1s)</option>
+    <option value="manual:apothecary">Apothecary (Narthecium: FNP 5+)</option>
+    <option value="manual:librarian">Librarian (Psychic powers)</option>
+  </optgroup>
+  <optgroup label="-- Orks --">
+    <option value="manual:warboss">Warboss (Might Is Right: +1 to Hit melee)</option>
+    <option value="manual:bigboss">Bigboss (Brutal Authority: re-roll hit 1s melee)</option>
+    <option value="manual:painboy">Painboy (Dok's Toolz: FNP 5+)</option>
+    <option value="manual:bannernob">Bannernob (Waaagh! Banner: Inv 5+)</option>
+  </optgroup>`;
+}
+
 function buildSim(){
   const us=R.units;
   let sA='<select id="sel-atk">';
@@ -1448,19 +1467,7 @@ function buildSim(){
     sL+='</optgroup>';
   }
   // Manual leader types (for reference targets or unattached units)
-  sL+=`<optgroup label="-- Space Marines --">
-    <option value="manual:lieutenant">Lieutenant (Tactical Precision: LETHAL HITS)</option>
-    <option value="manual:chaplain">Chaplain (Spiritual Leader: re-roll hit 1s melee)</option>
-    <option value="manual:captain">Captain (Rites of Battle: re-roll hit 1s)</option>
-    <option value="manual:apothecary">Apothecary (Narthecium: FNP 5+)</option>
-    <option value="manual:librarian">Librarian (Psychic powers)</option>
-  </optgroup>
-  <optgroup label="-- Orks --">
-    <option value="manual:warboss">Warboss (Might Is Right: +1 to Hit melee)</option>
-    <option value="manual:bigboss">Bigboss (Brutal Authority: re-roll hit 1s melee)</option>
-    <option value="manual:painboy">Painboy (Dok's Toolz: FNP 5+)</option>
-    <option value="manual:bannernob">Bannernob (Waaagh! Banner: Inv 5+)</option>
-  </optgroup>`;
+  sL+=manualLeaderOptionsHtml();
   sL+='</select>';
 
   const h=`<div class="card"><h3>Combat Configuration</h3>
@@ -1926,12 +1933,19 @@ function startLiveGame(){
     if(!entry||!entry.roster){errEl.textContent='That Library entry has no full roster data saved — re-analyse it first.';errEl.style.display='block';return;}
     myUnits=entry.roster.units;myDetachment=detectDetachment(entry.roster.detachment);
   }
-  const {roster:oppRoster,error}=parseRosterText(document.getElementById('live-opp-input').value);
-  if(error){errEl.textContent=error;errEl.style.display='block';return;}
+  // Opponent list is optional — if you don't have it, start empty and add their
+  // units one at a time (via the picker below) as they're revealed on the table.
+  const oppRaw=document.getElementById('live-opp-input').value.trim();
+  let oppUnits=[],oppDetachment=null;
+  if(oppRaw){
+    const {roster:oppRoster,error}=parseRosterText(oppRaw);
+    if(error){errEl.textContent=error;errEl.style.display='block';return;}
+    oppUnits=oppRoster.units;oppDetachment=oppRoster.detachmentObj||null;
+  }
   errEl.style.display='none';
   LIVE={
-    myUnits:cloneUnitsForLive(myUnits), oppUnits:cloneUnitsForLive(oppRoster.units),
-    myDetachment:myDetachment||null, oppDetachment:oppRoster.detachmentObj||null,
+    myUnits:cloneUnitsForLive(myUnits), oppUnits:cloneUnitsForLive(oppUnits),
+    myDetachment:myDetachment||null, oppDetachment,
     round:1
   };
   saveLive();
@@ -1980,8 +1994,8 @@ function buildLiveTab(){
     el.innerHTML=`<div class="card">
       <h3>Start a live game</h3>
       <div class="fg" style="margin-bottom:10px"><label>My army</label><select id="live-my-source">${srcOptions}</select></div>
-      <div class="fg" style="margin-bottom:10px"><label>Opponent's list — paste from Signal/WhatsApp (App/BattleScribe format)</label>
-        <textarea id="live-opp-input" style="height:160px" placeholder="Paste the opponent's roster here..."></textarea></div>
+      <div class="fg" style="margin-bottom:10px"><label>Opponent's list <span style="color:var(--text3);font-weight:400">— optional: paste from Signal/WhatsApp (App/BattleScribe format), or leave blank and add their units one by one as you see them deployed</span></label>
+        <textarea id="live-opp-input" style="height:160px" placeholder="Paste the opponent's roster here (optional)..."></textarea></div>
       <div class="err" id="live-err"></div>
       <button class="btn primary" onclick="startLiveGame()">&#9654; Start Game</button>
     </div>`;
@@ -2010,7 +2024,11 @@ function buildLiveTab(){
   };
   const myCol=LIVE.myUnits.map((u,i)=>renderUnit(u,'myUnits',i)).join('');
   const oppCol=LIVE.oppUnits.map((u,i)=>renderUnit(u,'oppUnits',i)).join('');
-  const dueOptions=(prefix,units)=>units.map((u,i)=>`<option value="${prefix}:${i}">${prefix==='myUnits'?'Me':'Opp'}: ${u.name} (${u._live.modelsLeft}/${u._live.startModels})</option>`).join('');
+  // Quick-added reference units (see liveAddOppUnit) carry accurate defensive
+  // stats but no weapon loadout — that only comes from parsed roster text — so
+  // they're excluded from the attacker list (would always show 0 damage).
+  const hasWeapons=u=>getAllWpn(u).some(w=>w&&w.s);
+  const dueOptions=(prefix,units,attackerOnly)=>units.map((u,i)=>({u,i})).filter(({u})=>!attackerOnly||hasWeapons(u)).map(({u,i})=>`<option value="${prefix}:${i}">${prefix==='myUnits'?'Me':'Opp'}: ${u.name} (${u._live.modelsLeft}/${u._live.startModels})</option>`).join('');
   el.innerHTML=`
     <div class="card" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
       <div style="display:flex;align-items:center;gap:8px">
@@ -2023,12 +2041,38 @@ function buildLiveTab(){
     </div>
     <div class="live-armies-grid">
       <div><div class="section-header">My Army</div>${myCol}</div>
-      <div><div class="section-header">Opponent Army</div>${oppCol}</div>
+      <div>
+        <div class="section-header">Opponent Army</div>
+        ${oppCol}
+        <div class="uc">
+          <div class="uh"><span class="un">+ Add opponent unit</span></div>
+          <div class="fg" style="margin-bottom:8px"><label>Detachment</label>
+            <select id="live-opp-detachment" onchange="setOppDetachment(this.value)">
+              <option value="">-- None / unknown --</option>
+              ${Object.keys(DETACHMENT_DB).map(k=>`<option value="${k}"${LIVE.oppDetachment&&LIVE.oppDetachment.name===DETACHMENT_DB[k].name?' selected':''}>${DETACHMENT_DB[k].name}</option>`).join('')}
+            </select>
+          </div>
+          <div class="f2" style="margin-bottom:8px">
+            <div class="fg"><label>Faction</label>
+              <select id="live-add-faction" onchange="buildLiveAddUnitOptions()">
+                <option value="sm">Space Marines</option>
+                <option value="ork">Orks</option>
+              </select>
+            </div>
+            <div class="fg"><label>Unit</label><select id="live-add-unit"></select></div>
+          </div>
+          <div class="fg" style="margin-bottom:8px"><label>Leader <span style="color:var(--text3);font-weight:400">(optional)</span></label>
+            <select id="live-add-leader"><option value="none">-- No leader --</option>${manualLeaderOptionsHtml()}</select>
+          </div>
+          <button class="btn" onclick="liveAddOppUnit()">+ Add to opponent army</button>
+          <p style="font-size:10px;color:var(--text3);margin-top:6px">Quick-added units have accurate defensive stats (wounds/save/toughness) but no weapon loadout, so they can be targeted but won't show up as an attacker — paste their list instead if you need them to attack.</p>
+        </div>
+      </div>
     </div>
     <div class="card" style="margin-top:1rem">
       <h3>Duel calculator</h3>
       <div class="f2">
-        <div class="fg"><label>Attacker</label><select id="live-sel-atk">${dueOptions('myUnits',LIVE.myUnits)}${dueOptions('oppUnits',LIVE.oppUnits)}</select></div>
+        <div class="fg"><label>Attacker</label><select id="live-sel-atk">${dueOptions('myUnits',LIVE.myUnits,true)}${dueOptions('oppUnits',LIVE.oppUnits,true)}</select></div>
         <div class="fg"><label>Target</label><select id="live-sel-def">${dueOptions('oppUnits',LIVE.oppUnits)}${dueOptions('myUnits',LIVE.myUnits)}</select></div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:10px">
@@ -2042,6 +2086,43 @@ function buildLiveTab(){
       <button class="btn primary" onclick="runLiveDuel()">Calculate</button>
       <div id="live-duel-result" style="margin-top:12px"></div>
     </div>`;
+  buildLiveAddUnitOptions();
+}
+
+// Populate the "add opponent unit" reference-unit dropdown for the selected
+// faction. Reuses the same SM_TARGETS/ORK_TARGETS reference lists as the
+// Combat Sim's "-- Custom target --" dropdown (see buildTargetDropdown()).
+function buildLiveAddUnitOptions(){
+  const sel=document.getElementById('live-add-unit');
+  if(!sel)return;
+  const faction=document.getElementById('live-add-faction').value;
+  const names=faction==='ork'?ORK_TARGETS:SM_TARGETS;
+  sel.innerHTML=names.filter(n=>UDB[n]).map(n=>{const p=UDB[n];return`<option value="${n}">${n} (W${p.w} T${p.T} Sv${p.sv}+)</option>`;}).join('');
+}
+
+function setOppDetachment(key){
+  LIVE.oppDetachment=key?DETACHMENT_DB[key]:null;
+  saveLive();
+}
+
+function liveAddOppUnit(){
+  const name=document.getElementById('live-add-unit').value;
+  if(!name)return;
+  const leaderVal=document.getElementById('live-add-leader').value;
+  const leaderName=leaderVal.startsWith('manual:')?leaderVal.slice(7):null;
+  const u={
+    name:name.replace(/\b\w/g,c=>c.toUpperCase()),points:0,section:'other',ag:null,
+    role:null,isWarlord:false,figures:[],weapons:[],
+    profile:mProf(name),
+    leaderAbilities:leaderName?getLeaderAbilities(leaderName):[],
+    leadedBy:leaderName?leaderName.replace(/\b\w/g,c=>c.toUpperCase()):null,
+    leadsUnit:null
+  };
+  const startModels=getModels(u);
+  u._live={startModels,modelsLeft:startModels,curWounds:null};
+  LIVE.oppUnits.push(u);
+  saveLive();
+  buildLiveTab();
 }
 
 function liveResolveSel(val){
