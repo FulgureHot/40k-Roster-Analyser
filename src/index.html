@@ -149,6 +149,7 @@ th{background:var(--bg3)}
 .toast.red{background:#c0392b;color:#fff}
 .army-score-grid{display:grid;grid-template-columns:1fr 1fr 150px;gap:16px;align-items:center}
 .live-armies-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:1rem}
+.unit-no{display:inline-block;flex-shrink:0;min-width:26px;text-align:center;padding:1px 5px;border-radius:4px;font-size:10px;font-weight:700;background:var(--overlay-3);color:var(--text2);border:1px solid var(--border)}
 .hp-track{height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-bottom:7px}
 .hp-fill{height:100%;border-radius:3px;transition:width .3s}
 .stepper-btn{padding:2px 10px;min-width:30px}
@@ -2122,12 +2123,54 @@ function endLiveGame(){
   buildLiveTab();
 }
 
+// ── Undo ────────────────────────────────────────────────────────────────────
+// In-memory only (doesn't survive a reload — the persisted LIVE is always the
+// current state). Snapshots just the mutable game state, not the whole LIVE:
+// detachment objects carry a calc() function that wouldn't survive JSON.
+const _undoStack=[];
+const UNDO_CAP=25;
+function liveSnapshot(){
+  return JSON.stringify({
+    my:LIVE.myUnits.map(u=>u._live), opp:LIVE.oppUnits.map(u=>u._live),
+    round:LIVE.round,myCP:LIVE.myCP,oppCP:LIVE.oppCP,myVP:LIVE.myVP,oppVP:LIVE.oppVP
+  });
+}
+function pushUndo(){
+  _undoStack.push(liveSnapshot());
+  if(_undoStack.length>UNDO_CAP)_undoStack.shift();
+}
+function liveUndo(){
+  if(!_undoStack.length){showToast('Nothing to undo','red');return;}
+  const s=JSON.parse(_undoStack.pop());
+  // Units added since the snapshot keep their own state — only indices that
+  // existed then are restored.
+  s.my.forEach((l,i)=>{if(LIVE.myUnits[i])LIVE.myUnits[i]._live=l;});
+  s.opp.forEach((l,i)=>{if(LIVE.oppUnits[i])LIVE.oppUnits[i]._live=l;});
+  LIVE.round=s.round;LIVE.myCP=s.myCP;LIVE.oppCP=s.oppCP;LIVE.myVP=s.myVP;LIVE.oppVP=s.oppVP;
+  saveLive();buildLiveTab();
+  showToast('↶ Undone','green');
+}
+
+// ── Unit numbering (spoken references: "U3 minus 2") ─────────────────────────
+// One sequence across both armies: my units 1..N, opponent N+1..N+M. Based on
+// storage order, so it stays stable even though destroyed units sink visually.
+function liveUnitNumber(side,idx){return side==='myUnits'?idx+1:LIVE.myUnits.length+idx+1;}
+function liveUnitByNumber(n){
+  const N=LIVE.myUnits.length;
+  if(n>=1&&n<=N)return{side:'myUnits',idx:n-1};
+  const j=n-N-1;
+  if(j>=0&&j<LIVE.oppUnits.length)return{side:'oppUnits',idx:j};
+  return null;
+}
+
 function liveAdjustModels(side,idx,delta){
+  pushUndo();
   const u=LIVE[side][idx];
   u._live.modelsLeft=Math.max(0,Math.min(u._live.startModels,u._live.modelsLeft+delta));
   saveLive();buildLiveTab();
 }
 function liveAdjustWounds(side,idx,delta){
+  pushUndo();
   const u=LIVE[side][idx];
   const maxW=u.profile.w;
   const cur=u._live.curWounds==null?maxW:u._live.curWounds;
@@ -2137,6 +2180,7 @@ function liveAdjustWounds(side,idx,delta){
   saveLive();buildLiveTab();
 }
 function liveResetUnit(side,idx){
+  pushUndo();
   const u=LIVE[side][idx];
   u._live.modelsLeft=u._live.startModels;u._live.curWounds=null;
   saveLive();buildLiveTab();
@@ -2157,6 +2201,105 @@ function toggleTurnChecklist(){
   const c=document.getElementById('turn-checklist');
   if(c)c.style.display=c.style.display==='none'?'block':'none';
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VOICE INPUT — hands-free casualty tracking during a game.
+// Deliberately gated: Chrome's SpeechRecognition streams audio to Google for
+// transcription, so it needs a network connection. Firefox Android doesn't
+// implement it at all. Hence: feature-detect, then require navigator.onLine.
+// Everything else in the app stays fully offline; this is a bonus, never a
+// dependency.
+//
+// Grammar (fr-FR): "U<n> moins <k>" / "U<n> plus <k>". Spoken unit NUMBERS
+// rather than names — English datasheet names ("Sternguard Veteran Squad")
+// under French recognition are hopeless. Add "PV" to target wounds explicitly;
+// otherwise single-model units default to wounds, multi-model units to models.
+// ══════════════════════════════════════════════════════════════════════════════
+const VOICE_NUM={zero:0,un:1,une:1,deux:2,trois:3,quatre:4,cinq:5,six:6,sept:7,huit:8,neuf:9,dix:10,
+  onze:11,douze:12,treize:13,quatorze:14,quinze:15,seize:16,'dix sept':17,'dix huit':18,'dix neuf':19,vingt:20};
+let _recog=null,_recogActive=false;
+
+function voiceSupported(){return !!(window.SpeechRecognition||window.webkitSpeechRecognition);}
+function voiceAvailable(){return voiceSupported()&&navigator.onLine;}
+
+function parseVoiceCommand(text){
+  const t=text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-z0-9 +-]/g,' ').replace(/\s+/g,' ').trim();
+  const words=Object.keys(VOICE_NUM).sort((a,b)=>b.length-a.length).join('|');
+  const NUM=`(\\d+|${words})`;
+  const STAT_KW='pv|blessures|blessure|vie|figurines|figurine|modeles|modele';
+  // The stat keyword may sit before or after the operator ("U14 PV moins 2" / "U5 moins 1 figurine")
+  const m=t.match(new RegExp(`(?:u|unite)?\\s*${NUM}(?:\\s+(?:${STAT_KW}))?\\s*(moins|plus|-|\\+)\\s*${NUM}`));
+  if(!m)return null;
+  const toNum=s=>/^\d+$/.test(s)?parseInt(s,10):VOICE_NUM[s];
+  const unitNo=toNum(m[1]),amt=toNum(m[3]);
+  if(!Number.isFinite(unitNo)||!Number.isFinite(amt)||amt===0)return null;
+  const sign=(m[2]==='plus'||m[2]==='+')?1:-1;
+  let stat=null;
+  if(/\b(pv|blessure|blessures|vie)\b/.test(t))stat='wounds';
+  else if(/\b(figurine|figurines|modele|modeles)\b/.test(t))stat='models';
+  return{unitNo,delta:sign*amt,stat,raw:text};
+}
+
+function applyVoiceCommand(cmd){
+  const ref=liveUnitByNumber(cmd.unitNo);
+  if(!ref){showToast(`Unité ${cmd.unitNo} inconnue`,'red');return false;}
+  const u=LIVE[ref.side][ref.idx];
+  // Single-model units (vehicles, characters) take wounds, not model losses
+  const stat=cmd.stat||((u._live.startModels===1&&u.profile.w>1)?'wounds':'models');
+  if(stat==='wounds')liveAdjustWounds(ref.side,ref.idx,cmd.delta);
+  else liveAdjustModels(ref.side,ref.idx,cmd.delta);
+  const after=stat==='wounds'
+    ? `${u._live.curWounds==null?u.profile.w:u._live.curWounds}/${u.profile.w} PV`
+    : `${u._live.modelsLeft}/${u._live.startModels} fig.`;
+  showToast(`U${cmd.unitNo} ${cmd.delta>0?'+':''}${cmd.delta} ${stat==='wounds'?'PV':'fig.'} → ${u.name}: ${after}`,'green');
+  return true;
+}
+
+function setVoiceStatus(msg,color){
+  const el=document.getElementById('voice-status');
+  if(el){el.textContent=msg||'';el.style.color=color||'var(--text3)';}
+}
+
+function toggleVoice(){
+  if(_recogActive){stopVoice();return;}
+  if(!voiceSupported()){showToast('Ce navigateur ne gère pas la reconnaissance vocale','red');return;}
+  if(!navigator.onLine){showToast('Reconnaissance vocale indisponible hors-ligne','red');return;}
+  const Rec=window.SpeechRecognition||window.webkitSpeechRecognition;
+  _recog=new Rec();
+  _recog.lang='fr-FR';
+  _recog.continuous=false;      // one utterance per tap — avoids picking up table talk
+  _recog.interimResults=true;
+  _recog.maxAlternatives=3;     // try each alternative until one parses
+  _recog.onstart=()=>{_recogActive=true;updateVoiceBtn();setVoiceStatus('🎙 Écoute… ex. « U3 moins 2 »','var(--c-blue)');};
+  _recog.onerror=e=>{
+    const msg=e.error==='not-allowed'?'Micro refusé — autorise-le dans les réglages du navigateur'
+      :e.error==='network'?'Échec réseau — la reconnaissance vocale exige une connexion'
+      :'Erreur micro: '+e.error;
+    setVoiceStatus(msg,'var(--c-red-lt)');
+  };
+  _recog.onend=()=>{_recogActive=false;updateVoiceBtn();};
+  _recog.onresult=ev=>{
+    const res=ev.results[ev.results.length-1];
+    if(!res.isFinal){setVoiceStatus('🎙 '+res[0].transcript,'var(--c-blue)');return;}
+    for(let i=0;i<res.length;i++){
+      const cmd=parseVoiceCommand(res[i].transcript);
+      if(cmd&&applyVoiceCommand(cmd)){setVoiceStatus(`✓ « ${res[i].transcript} »`,'var(--c-green)');return;}
+    }
+    setVoiceStatus(`✗ Non compris : « ${res[0].transcript} » — dis par ex. « U3 moins 2 »`,'var(--c-amber)');
+  };
+  try{_recog.start();}catch(e){setVoiceStatus('Impossible de démarrer le micro: '+e.message,'var(--c-red-lt)');}
+}
+function stopVoice(){ if(_recog){try{_recog.stop();}catch(e){}} _recogActive=false;updateVoiceBtn(); }
+function updateVoiceBtn(){
+  const b=document.getElementById('voice-btn');
+  if(!b)return;
+  b.textContent=_recogActive?'⏹ Stop':'🎤 Voice';
+  b.classList.toggle('primary',_recogActive);
+}
+// Re-render the Live tab when connectivity flips, so the mic button reflects it
+window.addEventListener('online',()=>{if(LIVE&&document.getElementById('s-live')?.classList.contains('active'))buildLiveTab();});
+window.addEventListener('offline',()=>{if(LIVE&&document.getElementById('s-live')?.classList.contains('active'))buildLiveTab();});
 
 function buildLiveTab(){
   const el=document.getElementById('live-c');
@@ -2195,7 +2338,7 @@ function buildLiveTab(){
       `melee ~${mThreat.min}-${mThreat.max}"`
     ].filter(Boolean).join(' · ');
     return `<div class="uc"${dead?' style="opacity:.5"':''}>
-      <div class="uh"><span class="un">${u.name}</span>${u.leadedBy?`<span class="badge bl">led by ${u.leadedBy.split(' ')[0]}</span>`:''}${dead?'<span class="badge bw">Destroyed</span>':''}${belowHalf?`<span class="badge bbl" title="Below half strength — must take a Battle-shock test (2D6 ≥ Ld ${ldOf(u.profile)}+). ~${bsPass}% to pass.">&#9888; Battle-shock ${bsPass}%</span>`:''}</div>
+      <div class="uh"><span class="unit-no" title="Spoken reference: « U${liveUnitNumber(side,idx)} moins 2 »">U${liveUnitNumber(side,idx)}</span><span class="un">${u.name}</span>${u.leadedBy?`<span class="badge bl">led by ${u.leadedBy.split(' ')[0]}</span>`:''}${dead?'<span class="badge bw">Destroyed</span>':''}${belowHalf?`<span class="badge bbl" title="Below half strength — must take a Battle-shock test (2D6 ≥ Ld ${ldOf(u.profile)}+). ~${bsPass}% to pass.">&#9888; Battle-shock ${bsPass}%</span>`:''}</div>
       <div class="hp-track"><div class="hp-fill" style="width:${Math.round(ratio*100)}%;background:${hpColor}"></div></div>
       <div style="font-size:10px;color:var(--text3);margin-bottom:6px">${threatStr} &middot; OC ${ocTotal} (${oc}/model)</div>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:11px;color:var(--text3)">
@@ -2233,9 +2376,19 @@ function buildLiveTab(){
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px 16px">
         ${counter('Round',LIVE.round,'liveAdjustRound')}
-        <button class="btn" onclick="toggleTurnChecklist()" title="Phase-by-phase turn reminder">&#9776; Turn checklist</button>
-        <button class="btn" onclick="endLiveGame()">End Game</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn" onclick="liveUndo()" title="Undo the last casualty / counter change">&#8630; Undo</button>
+          ${voiceSupported()?`<button class="btn" id="voice-btn" onclick="toggleVoice()"${navigator.onLine?'':' disabled title="Voice needs a network connection"'}>&#127908; Voice</button>`:''}
+          <button class="btn" onclick="toggleTurnChecklist()" title="Phase-by-phase turn reminder">&#9776; Turn checklist</button>
+          <button class="btn" onclick="endLiveGame()">End Game</button>
+        </div>
       </div>
+      ${voiceSupported()?`<div style="margin-top:8px">
+        <div id="voice-status" style="font-size:11px;color:var(--text3);min-height:15px"></div>
+        <div style="font-size:10px;color:var(--text3)">${navigator.onLine
+          ?'Dis par ex. <strong>&laquo; U3 moins 2 &raquo;</strong> (perd 2 figurines) &middot; <strong>&laquo; U12 plus 1 &raquo;</strong> (soin) &middot; ajoute <strong>PV</strong> pour viser les blessures. Les unités à 1 figurine prennent des PV par défaut.'
+          :'&#9888; Hors-ligne &mdash; micro indisponible (Chrome transcrit la voix sur les serveurs Google). Les boutons +/&minus; et Undo fonctionnent normalement.'}</div>
+      </div>`:''}
       <div style="display:flex;gap:14px 22px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
         <div style="display:flex;gap:10px 16px;flex-wrap:wrap;align-items:center">
           <span style="font-size:11px;font-weight:700;color:var(--c-blue)">ME</span>
