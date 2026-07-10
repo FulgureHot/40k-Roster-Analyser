@@ -121,7 +121,7 @@ Demande : "reprends les règles du jeu, imagine un joueur débutant" → 9 propo
 - **2 nouveaux stratagèmes** câblés dans le moteur (`calcDmg`/`probKill`/`dmgDistribution`, rétrocompatibles — champs `opts` falsy par défaut, Combat Sim classique inchangé, vérifié 8.87) : **Overwatch** (`opts.overwatch` — seules les armes de tir font feu, touche fixée à 1/6, pas de re-roll ; testé 14.31→1.61) et **Smokescreen** (`opts.rangedHitPenalty` — -1 à toucher au tir en plus du couvert ; testé 14.31→12.86).
 - **Leaders Ork déjà réparés en V2** (mergé) — pas ré-touché.
 - Testé (eval + mesures directes, viewport 1280 et 412px) : dés, Ld/OC dérivés, badges Battle-shock, portées, VP persistés après reload, compteurs IIFE au clic, checklist, charge/grenade, trade (Favourable vérifié), overwatch/smoke, les 2 vues d'analyse, Combat Sim classique intact. Aucune erreur console.
-- **En attente de validation utilisateur avant merge dans `main`.**
+- **Validé par l'utilisateur (revue visuelle en partie simulée) et mergé dans `main` le 2026-07-07** (fast-forward) → déployé, remplace la V2 en production.
 
 ## Points d'attention / dette technique repérée (non traités, hors scope des demandes)
 
