@@ -50,7 +50,7 @@ function createMenu() {
           label: 'New Analysis',
           accelerator: 'CmdOrCtrl+N',
           click: () => mainWindow?.webContents.executeJavaScript(
-            "document.querySelector('[onclick=\"showTab(\\\'paste\\\')\"]').click(); document.getElementById('roster-input').value='';"
+            "showMode('lists'); showTab('library'); document.getElementById('roster-input').value='';"
           )
         },
         { type: 'separator' },
