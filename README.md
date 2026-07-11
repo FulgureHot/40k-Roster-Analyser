@@ -12,6 +12,9 @@ Deux modes :
 - **Combat Sim** — simulateur théorique contre des profils de référence
 - **Detachments** — référentiel des détachements SM/BA/Orks 11e édition
 
+### ☁ Sync multi-appareils (optionnel)
+La Library peut se synchroniser entre appareils (desktop Electron, Chrome, Firefox) via le dépôt GitHub : fichier `library.json` sur la branche `library-data`, tiré au lancement et poussé après chaque modification (débouncé), fusion par entrée avec propagation des suppressions, plafond 100 listes. Nécessite un token GitHub à granularité fine (Contents Read&Write sur ce seul repo), collé une fois par appareil dans la carte « ☁ Sync » de la Library — guide inclus dans l'app. **Le repo étant public, les listes synchronisées sont publiques.** Sans token ou hors-ligne, l'app fonctionne exactement comme avant.
+
 ### ⚔ Battle — en partie
 - **Setup** — ta liste + la liste adverse (collée depuis WhatsApp/mail) en 3 étapes
 - **Plan** — toutes les confrontations calculées d'avance, dans les deux sens : meilleures cibles de chaque unité, menaces adverses, pression subie par tes unités ; un tap ouvre le duel détaillé

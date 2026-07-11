@@ -268,6 +268,31 @@ shooting for 1 CP.</div></div><div class="det-card"><div class="det-card-name"> 
       </div>
     </details>
   </div>
+  <div class="card">
+    <details>
+      <summary style="font-size:12px;font-weight:700;color:var(--text2);cursor:pointer">☁ Sync across devices (GitHub) <span id="sync-status-mini" style="font-weight:400;color:var(--text3)"></span></summary>
+      <div style="margin-top:10px">
+        <p style="font-size:11px;color:var(--text3);margin-bottom:8px">Keeps this library identical on desktop, Chrome and Firefox by storing it in your GitHub repo (branch <code>library-data</code>). Needs a personal access token, entered once per device. <strong style="color:var(--c-amber)">The repo is public — synced lists are visible to anyone.</strong></p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <input type="password" id="gh-token-input" placeholder="github_pat_…" style="flex:1;min-width:200px">
+          <button class="btn" onclick="uiSaveToken()">Save token</button>
+          <button class="btn" onclick="uiClearToken()" title="Remove the token from this device">Remove</button>
+          <button class="btn primary" onclick="syncNow('manual')">⟳ Sync now</button>
+        </div>
+        <div id="sync-status" style="font-size:11px;color:var(--text3);min-height:15px;margin-bottom:8px"></div>
+        <details>
+          <summary style="font-size:11px;color:var(--text3);cursor:pointer">How to create the token (once, ~2 min)</summary>
+          <ol style="font-size:11px;color:var(--text3);margin:6px 0 0 18px;line-height:1.8">
+            <li>GitHub → your avatar → <strong>Settings</strong> → <strong>Developer settings</strong> → <strong>Personal access tokens → Fine-grained tokens</strong> → Generate new token</li>
+            <li><strong>Repository access</strong>: "Only select repositories" → <code>40k-Roster-Analyser</code> uniquement</li>
+            <li><strong>Permissions → Repository → Contents</strong>: <strong>Read and write</strong> (rien d'autre)</li>
+            <li>Expiration : 1 an · Generate, puis colle le token ci-dessus <strong>sur chaque appareil</strong></li>
+          </ol>
+          <p style="font-size:10px;color:var(--text3);margin-top:6px">Le token reste dans le stockage local de cet appareil — il n'est jamais envoyé ailleurs que vers l'API GitHub, jamais synchronisé, jamais commité.</p>
+        </details>
+      </div>
+    </details>
+  </div>
   <div class="section-header">My library</div>
   <div id="lib-c">  <div class="empty">No saved rosters yet — analyze a roster to add it to the library</div></div>
 </div>
@@ -1819,6 +1844,10 @@ function computeRosterSnapshot(roster){
 // In-memory fallback for file:// contexts + window.storage for persistence
 // ── Library storage: memory-first, persist to window.storage / localStorage ──
 const LIB_KEY = '40k_roster_library_v1';
+const LIB_MAX = 100; // sync payload and UI both stay manageable
+// Numeric last-modified for merge decisions; legacy entries fall back to their
+// creation id (Date.now() at first save) — savedAt is a locale string, unusable.
+function entryUpdatedAt(e){ return e.updatedAt || e.id || 0; }
 let _libCache = [];      // always valid — never null
 let _libLoaded = false;  // true once we've attempted to load from persistence
 
@@ -1871,6 +1900,9 @@ async function saveLibrary(lib){
   try{ localStorage.setItem(LIB_KEY, JSON.stringify(lib)); persisted = true; }
   catch(e){ console.error('[Library] localStorage.setItem failed:', e); }
   if(!persisted) throw new Error('No storage backend available (window.storage and localStorage both failed)');
+  // GitHub sync: every local change schedules a debounced push — except while a
+  // merge result is being applied (that would loop pull→save→push forever)
+  if(!_syncApplying)scheduleSyncPush();
 }
 
 function saveRosterToLibrary(){
@@ -1889,8 +1921,15 @@ function saveRosterToLibrary(){
         profile:u.profile, figures:u.figures||[], weapons:u.weapons||[]
       }))
     };
+    snap.updatedAt = Date.now(); // numeric, comparable — savedAt is a locale display string
     const idx = _libCache.findIndex(e=>e.name===snap.name&&e.faction===snap.faction);
     if(idx>=0){snap.id=_libCache[idx].id;snap.note=_libCache[idx].note;_libCache[idx]=snap;}else _libCache.push(snap);
+    // Cap the library (sync payload and UI both stay manageable) — evict oldest first
+    if(_libCache.length>LIB_MAX){
+      _libCache.sort((a,b)=>entryUpdatedAt(b)-entryUpdatedAt(a));
+      const evicted=_libCache.splice(LIB_MAX);
+      showToast(`Library is capped at ${LIB_MAX} lists — removed ${evicted.length} oldest`, 'red');
+    }
     console.log('[Library] Saved:', snap.name, '| Total rosters:', _libCache.length);
     saveLibrary([..._libCache]).then(()=>{
       showToast(`Saved to library — ${snap.name}`, 'green');
@@ -1906,6 +1945,9 @@ function saveRosterToLibrary(){
 
 function deleteFromLibrary(id){
   _libCache = _libCache.filter(e=>e.id!==id);
+  // Tombstone so the deletion propagates through sync instead of the entry
+  // resurrecting from another device's copy
+  addTombstone(id);
   saveLibrary([..._libCache]).catch(()=>{});
   buildLibraryTab();
 }
@@ -2097,8 +2139,222 @@ function libSaveNote(id){
   const entry=_libCache.find(e=>e.id===id);
   if(!entry)return;
   entry.note=document.getElementById('lib-note-input-'+id).value.trim();
+  entry.updatedAt=Date.now();
   saveLibrary([..._libCache]).catch(e=>console.error('[Library] note save failed:',e));
   buildLibraryTab();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GITHUB SYNC — the library lives in this device's localStorage, which Electron,
+// Chrome (PWA) and Firefox do NOT share. When a fine-grained PAT is provided
+// (per device, stored locally, NEVER synced or committed), the library syncs
+// through the repo: file library.json on the dedicated 'library-data' branch
+// (clean main history, never triggers the Pages deploy which filters src/**).
+// Pull+merge on launch, debounced push after every change, push of pending
+// changes when connectivity returns. Offline or token-less, the app behaves
+// exactly as before — sync is a bonus, never a dependency.
+// NOTE: the repo is public, so synced lists are public. The token is write
+// access to this one repo's contents — keep it out of the repo itself.
+// ══════════════════════════════════════════════════════════════════════════════
+const GH_OWNER='FulgureHot', GH_REPO='40k-Roster-Analyser', GH_BRANCH='library-data', GH_FILE='library.json';
+const GH_TOKEN_KEY='40k_gh_token', TOMB_KEY='40k_lib_tombstones', SYNC_DIRTY_KEY='40k_sync_dirty';
+const TOMB_MAX_AGE=90*24*3600*1000; // prune tombstones older than 90 days
+let _syncStatus={state:'off',msg:'',at:null};
+let _syncApplying=false; // guards saveLibrary→schedulePush loop while applying a merge
+let _syncTimer=null,_syncRunning=false;
+
+function ghToken(){ try{return localStorage.getItem(GH_TOKEN_KEY)||'';}catch(e){return '';} }
+function setGhToken(t){
+  try{ t?localStorage.setItem(GH_TOKEN_KEY,t.trim()):localStorage.removeItem(GH_TOKEN_KEY); }catch(e){}
+  setSyncStatus(t?{state:'idle',msg:'Token saved — not synced yet'}:{state:'off',msg:''});
+}
+function ghFetch(path,opts={}){
+  return fetch('https://api.github.com'+path,{...opts,headers:{
+    'Accept':'application/vnd.github+json',
+    'Authorization':'Bearer '+ghToken(),
+    'X-GitHub-Api-Version':'2022-11-28',
+    ...(opts.headers||{})
+  }});
+}
+// UTF-8-safe base64 (roster names carry accents); chunked to avoid arg-spread limits
+function b64EncodeUtf8(str){
+  const bytes=new TextEncoder().encode(str);
+  let bin='';for(let i=0;i<bytes.length;i+=0x8000)bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));
+  return btoa(bin);
+}
+function b64DecodeUtf8(b64){
+  const bin=atob(b64.replace(/\n/g,''));
+  const bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+function getTombstones(){ try{return JSON.parse(localStorage.getItem(TOMB_KEY)||'[]');}catch(e){return [];} }
+function addTombstone(id){
+  const t=getTombstones().filter(x=>x.id!==id);
+  t.push({id,at:Date.now()});
+  try{localStorage.setItem(TOMB_KEY,JSON.stringify(t));}catch(e){}
+}
+function setTombstones(t){ try{localStorage.setItem(TOMB_KEY,JSON.stringify(t));}catch(e){} }
+
+// Union-by-id merge: newest updatedAt wins per entry; tombstones delete unless
+// the entry was re-saved after the deletion; cap at LIB_MAX newest.
+function mergeLibraries(localEntries,localTombs,remoteEntries,remoteTombs){
+  const now=Date.now();
+  const tombMap={};
+  for(const t of[...(localTombs||[]),...(remoteTombs||[])]){
+    if(now-t.at>TOMB_MAX_AGE)continue;
+    if(!tombMap[t.id]||tombMap[t.id]<t.at)tombMap[t.id]=t.at;
+  }
+  const byId={};
+  for(const e of[...(localEntries||[]),...(remoteEntries||[])]){
+    if(!e||!e.id)continue;
+    if(!byId[e.id]||entryUpdatedAt(e)>entryUpdatedAt(byId[e.id]))byId[e.id]=e;
+  }
+  const entries=[],tombs=[];
+  for(const[idStr,at]of Object.entries(tombMap)){
+    const id=+idStr,e=byId[id];
+    if(e&&entryUpdatedAt(e)>at){continue;} // re-saved after deletion → entry survives, tombstone dropped
+    delete byId[id];
+    tombs.push({id,at});
+  }
+  for(const e of Object.values(byId))entries.push(e);
+  entries.sort((a,b)=>entryUpdatedAt(b)-entryUpdatedAt(a));
+  return{entries:entries.slice(0,LIB_MAX),deleted:tombs};
+}
+
+function setSyncStatus(s){
+  _syncStatus={..._syncStatus,...s,at:s.state==='ok'?Date.now():_syncStatus.at};
+  const el=document.getElementById('sync-status');
+  if(el){
+    const when=_syncStatus.at?new Date(_syncStatus.at).toLocaleTimeString():null;
+    el.textContent=_syncStatus.state==='off'?'Sync disabled — no token'
+      :_syncStatus.state==='syncing'?'⟳ Syncing…'
+      :_syncStatus.state==='ok'?`✓ Synced${when?' at '+when:''} (${_libCache.length} lists)`
+      :_syncStatus.state==='error'?'✗ '+_syncStatus.msg
+      :_syncStatus.msg||'';
+    el.style.color=_syncStatus.state==='error'?'var(--c-red-lt)':_syncStatus.state==='ok'?'var(--c-green)':'var(--text3)';
+  }
+  const mini=document.getElementById('sync-status-mini');
+  if(mini)mini.textContent=ghToken()?(_syncStatus.state==='error'?'— ✗ error':_syncStatus.state==='ok'?'— ✓ on':'— on'):'— off';
+}
+function markSyncDirty(){ try{localStorage.setItem(SYNC_DIRTY_KEY,'1');}catch(e){} }
+function clearSyncDirty(){ try{localStorage.removeItem(SYNC_DIRTY_KEY);}catch(e){} }
+function isSyncDirty(){ try{return !!localStorage.getItem(SYNC_DIRTY_KEY);}catch(e){return false;} }
+function scheduleSyncPush(){
+  if(!ghToken())return;
+  markSyncDirty();
+  clearTimeout(_syncTimer);
+  _syncTimer=setTimeout(()=>syncNow('change'),4000);
+}
+
+async function ensureDataBranch(){
+  const r=await ghFetch(`/repos/${GH_OWNER}/${GH_REPO}/git/ref/heads/${GH_BRANCH}`);
+  if(r.ok)return true;
+  if(r.status!==404)throw new Error('branch check HTTP '+r.status);
+  const main=await ghFetch(`/repos/${GH_OWNER}/${GH_REPO}/git/ref/heads/main`);
+  if(!main.ok)throw new Error('main ref HTTP '+main.status);
+  const sha=(await main.json()).object.sha;
+  const c=await ghFetch(`/repos/${GH_OWNER}/${GH_REPO}/git/refs`,{method:'POST',body:JSON.stringify({ref:`refs/heads/${GH_BRANCH}`,sha})});
+  if(!c.ok)throw new Error('branch create HTTP '+c.status);
+  return true;
+}
+
+// → {entries, deleted, sha} ; missing file/branch → empty library, sha null
+async function pullRemoteLibrary(){
+  const r=await ghFetch(`/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_FILE}?ref=${GH_BRANCH}`);
+  if(r.status===404)return{entries:[],deleted:[],sha:null};
+  if(!r.ok)throw new Error('pull HTTP '+r.status);
+  const data=await r.json();
+  let text;
+  if(data.content){ text=b64DecodeUtf8(data.content); }
+  else{ // >1MB: content omitted — fetch the raw download URL instead
+    const raw=await fetch(data.download_url);
+    if(!raw.ok)throw new Error('raw pull HTTP '+raw.status);
+    text=await raw.text();
+  }
+  let parsed;
+  try{ parsed=JSON.parse(text); }catch(e){ throw new Error('remote library.json is not valid JSON'); }
+  return{entries:parsed.entries||[],deleted:parsed.deleted||[],sha:data.sha};
+}
+
+async function pushRemoteLibrary(entries,deleted,sha){
+  const body={
+    message:'Sync library ('+entries.length+' lists)',
+    content:b64EncodeUtf8(JSON.stringify({version:1,updatedAt:Date.now(),entries,deleted})),
+    branch:GH_BRANCH
+  };
+  if(sha)body.sha=sha;
+  const r=await ghFetch(`/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_FILE}`,{method:'PUT',body:JSON.stringify(body)});
+  if(!r.ok)throw new Error('push HTTP '+r.status);
+  return true;
+}
+
+// Full cycle: pull → merge → apply locally → push if we hold anything newer.
+// On a write conflict (another device pushed in between), re-pull and retry once.
+async function syncNow(reason){
+  if(!ghToken()){setSyncStatus({state:'off'});return;}
+  if(!navigator.onLine){setSyncStatus({state:'error',msg:'Offline — will sync when back online'});return;}
+  if(_syncRunning)return;
+  _syncRunning=true;
+  setSyncStatus({state:'syncing'});
+  try{
+    await _ensureLoaded();
+    for(let attempt=0;attempt<2;attempt++){
+      await ensureDataBranch();
+      const remote=await pullRemoteLibrary();
+      const merged=mergeLibraries(_libCache,getTombstones(),remote.entries,remote.deleted);
+      // Apply merge locally (guard keeps saveLibrary from re-scheduling a push)
+      const localChanged=JSON.stringify(merged.entries)!==JSON.stringify(_libCache);
+      if(localChanged){
+        _syncApplying=true;
+        try{ await saveLibrary(merged.entries); }finally{ _syncApplying=false; }
+        if(document.getElementById('s-library')?.classList.contains('active'))buildLibraryTab();
+      }
+      setTombstones(merged.deleted);
+      const remoteChanged=JSON.stringify(merged.entries)!==JSON.stringify(remote.entries)
+        ||JSON.stringify(merged.deleted)!==JSON.stringify(remote.deleted);
+      if(!remoteChanged){clearSyncDirty();setSyncStatus({state:'ok'});break;}
+      try{
+        await pushRemoteLibrary(merged.entries,merged.deleted,remote.sha);
+        clearSyncDirty();setSyncStatus({state:'ok'});break;
+      }catch(e){
+        // sha conflict (409/422): another device won the race — loop re-pulls once
+        if(attempt===0&&/409|422/.test(e.message)){continue;}
+        throw e;
+      }
+    }
+    console.log('[Sync] done ('+(reason||'manual')+'):',_libCache.length,'lists');
+  }catch(e){
+    console.error('[Sync] failed:',e);
+    setSyncStatus({state:'error',msg:e.message});
+  }finally{
+    _syncRunning=false;
+  }
+}
+
+window.addEventListener('online',()=>{ if(ghToken()&&isSyncDirty())syncNow('reconnect'); });
+
+// Sync card UI glue
+function uiSaveToken(){
+  const inp=document.getElementById('gh-token-input');
+  const t=inp.value.trim();
+  if(!t){showToast('Paste a token first','red');return;}
+  if(!/^gh[pous]_|^github_pat_/.test(t)){showToast('That does not look like a GitHub token','red');return;}
+  setGhToken(t);
+  inp.value='';
+  refreshSyncCardUI();
+  showToast('Token saved on this device','green');
+  syncNow('token-set');
+}
+function uiClearToken(){
+  setGhToken('');
+  refreshSyncCardUI();
+  showToast('Token removed from this device','green');
+}
+function refreshSyncCardUI(){
+  const inp=document.getElementById('gh-token-input');
+  if(inp)inp.placeholder=ghToken()?'•••••• token saved — paste to replace':'github_pat_…';
+  setSyncStatus(ghToken()?{}:{state:'off',msg:''});
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3136,6 +3392,10 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(LIVE)showMode('battle');
   else if(lastMode==='battle')showMode('battle');
   else showMode('lists');
+  // GitHub sync on launch (token present + online) — silent no-op otherwise
+  refreshSyncCardUI();
+  if(ghToken()&&navigator.onLine)syncNow('startup');
+  else if(ghToken())setSyncStatus({state:'error',msg:'Offline — will sync when back online'});
 });
 
 // PWA offline cache — service workers require a secure context (https/localhost),
