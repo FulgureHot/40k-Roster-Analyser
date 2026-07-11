@@ -153,6 +153,10 @@ th{background:var(--bg3)}
 .army-score-grid{display:grid;grid-template-columns:1fr 1fr 150px;gap:16px;align-items:center}
 .live-armies-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:1rem}
 .unit-no{display:inline-block;flex-shrink:0;min-width:26px;text-align:center;padding:1px 5px;border-radius:4px;font-size:10px;font-weight:700;background:var(--overlay-3);color:var(--text2);border:1px solid var(--border)}
+.setup-step{display:flex;gap:12px;margin-bottom:16px}
+.setup-no{flex-shrink:0;width:28px;height:28px;border-radius:50%;background:var(--red);color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center}
+.setup-body{flex:1;min-width:0}
+.setup-body>label{font-size:12px;font-weight:700;color:var(--text);display:block;margin-bottom:4px}
 .hp-track{height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-bottom:7px}
 .hp-fill{height:100%;border-radius:3px;transition:width .3s}
 .stepper-btn{padding:2px 10px;min-width:30px}
@@ -2139,6 +2143,9 @@ function startLiveGame(){
     if(error){errEl.textContent=error;errEl.style.display='block';return;}
     oppUnits=oppRoster.units;oppDetachment=oppRoster.detachmentObj||null;
   }
+  // Step-3 manual override beats auto-detection
+  const detOv=document.getElementById('live-opp-det-override');
+  if(detOv&&detOv.value!=='auto')oppDetachment=DETACHMENT_DB[detOv.value]||oppDetachment;
   errEl.style.display='none';
   LIVE={
     myUnits:cloneUnitsForLive(myUnits), oppUnits:cloneUnitsForLive(oppUnits),
@@ -2341,14 +2348,41 @@ function buildLiveTab(){
     let srcOptions='';
     if(R&&R.units&&R.units.length) srcOptions+=`<option value="current">Currently analysed: ${R.name} (${R.units.length} units)</option>`;
     for(const e of lib) srcOptions+=`<option value="${e.id}">${e.name} — ${e.points}pts (Library)</option>`;
-    if(!srcOptions) srcOptions='<option value="">No list available — analyse or save one first</option>';
+    const noList=!srcOptions;
+    if(noList) srcOptions='<option value="">No list yet — add one in Lists &rarr; Library first</option>';
+    const oppDetOptions=Object.keys(DETACHMENT_DB).map(k=>`<option value="${k}">${DETACHMENT_DB[k].name}</option>`).join('');
     el.innerHTML=`<div class="card">
-      <h3>Start a live game</h3>
-      <div class="fg" style="margin-bottom:10px"><label>My army</label><select id="live-my-source">${srcOptions}</select></div>
-      <div class="fg" style="margin-bottom:10px"><label>Opponent's list <span style="color:var(--text3);font-weight:400">— optional: paste from Signal/WhatsApp (App/BattleScribe format), or leave blank and add their units one by one as you see them deployed</span></label>
-        <textarea id="live-opp-input" style="height:160px" placeholder="Paste the opponent's roster here (optional)..."></textarea></div>
+      <h3>&#9876; New battle</h3>
+      ${noList?'<div class="info amber">You need a list first: go to <strong>Lists &rarr; Library</strong> and paste yours.</div>':''}
+      <div class="setup-step">
+        <div class="setup-no">1</div>
+        <div class="setup-body">
+          <label>Your army</label>
+          <select id="live-my-source">${srcOptions}</select>
+        </div>
+      </div>
+      <div class="setup-step">
+        <div class="setup-no">2</div>
+        <div class="setup-body">
+          <label>Opponent's list</label>
+          <p style="font-size:11px;color:var(--text3);margin:2px 0 6px">Paste the list they sent you (WhatsApp / mail / Signal — Warhammer App or BattleScribe format).</p>
+          <textarea id="live-opp-input" style="height:150px" placeholder="Paste the opponent's roster here..."></textarea>
+          <p style="font-size:10px;color:var(--text3);margin-top:4px">Don't have it? Leave blank — you can add their units one by one during the game, as they get revealed.</p>
+        </div>
+      </div>
+      <div class="setup-step">
+        <div class="setup-no">3</div>
+        <div class="setup-body">
+          <label>Detachments</label>
+          <p style="font-size:11px;color:var(--text3);margin:2px 0 6px">Yours is read from your list. Theirs is auto-detected from the pasted text — override it here if needed.</p>
+          <select id="live-opp-det-override">
+            <option value="auto">Opponent detachment: auto-detect</option>
+            ${oppDetOptions}
+          </select>
+        </div>
+      </div>
       <div class="err" id="live-err"></div>
-      <button class="btn primary" onclick="startLiveGame()">&#9654; Start Game</button>
+      <button class="btn primary" style="width:100%;padding:12px;font-size:14px;margin-top:6px" onclick="startLiveGame()"${noList?' disabled':''}>&#9876; Start battle</button>
     </div>`;
     return;
   }
