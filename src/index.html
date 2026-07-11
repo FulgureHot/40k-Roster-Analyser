@@ -153,6 +153,9 @@ th{background:var(--bg3)}
 .army-score-grid{display:grid;grid-template-columns:1fr 1fr 150px;gap:16px;align-items:center}
 .live-armies-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:1rem}
 .unit-no{display:inline-block;flex-shrink:0;min-width:26px;text-align:center;padding:1px 5px;border-radius:4px;font-size:10px;font-weight:700;background:var(--overlay-3);color:var(--text2);border:1px solid var(--border)}
+.qty-btn{min-width:44px;padding:3px 6px;border:1px dashed var(--border);border-radius:6px;background:none;color:var(--text);font-weight:700;font-size:12px;cursor:pointer;font-family:var(--font);text-align:center}
+.qty-btn:hover{border-color:var(--red)}
+.quick-pad{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;padding:8px;border:1px dashed var(--border);border-radius:6px;background:var(--overlay-1)}
 .plan-chips{display:flex;flex-wrap:wrap;gap:6px}
 .plan-chip{display:inline-flex;flex-direction:column;align-items:flex-start;gap:1px;padding:5px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--text2);font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font);text-align:left}
 .plan-chip .plan-chip-num{font-size:10px;font-weight:400;color:var(--text3)}
@@ -207,7 +210,9 @@ th{background:var(--bg3)}
 </div>
 <div class="tabs" id="subnav-battle" style="display:none">
   <button class="tab" onclick="showTab('bplan')">🎯 Plan</button>
-  <button class="tab" onclick="showTab('live')">⚔ Battle</button>
+  <button class="tab" id="tab-live" onclick="showTab('live')">📋 Tracker</button>
+  <button class="tab" onclick="showTab('bduel')">⚔ Duel</button>
+  <button class="tab" onclick="showTab('btools')">🧰 Tools</button>
 </div>
 <div id="s-units" class="section"><div id="units-c"><div class="empty">Paste and analyze a roster first</div></div></div>
 <div id="s-stats" class="section"><div id="stats-c"><div class="empty">Paste and analyze a roster first</div></div></div>
@@ -268,6 +273,8 @@ shooting for 1 CP.</div></div><div class="det-card"><div class="det-card-name"> 
 </div>
 <div id="s-live" class="section"><div id="live-c">  <div class="empty">Loading…</div></div></div>
 <div id="s-bplan" class="section"><div id="bplan-c">  <div class="empty">No active battle</div></div></div>
+<div id="s-bduel" class="section"><div id="bduel-c">  <div class="empty">No active battle</div></div></div>
+<div id="s-btools" class="section"><div id="btools-c">  <div class="empty">No active battle</div></div></div>
 </div>
 <script>
 const SAMPLES={
@@ -651,7 +658,7 @@ function dispCls(d){return{TH:'disp-th',PF:'disp-pf',DI:'disp-di',RE:'disp-re',P
 // ── Two-mode navigation: Lists (out of game) / Battle (in game) ──────────────
 let MODE='lists';
 const TAB_ALIAS={paste:'library'}; // legacy id (Electron menu accelerator, old links)
-const TAB_MODE={library:'lists',units:'lists',stats:'lists',sim:'lists',detachments:'lists',live:'battle',bplan:'battle'};
+const TAB_MODE={library:'lists',units:'lists',stats:'lists',sim:'lists',detachments:'lists',live:'battle',bplan:'battle',bduel:'battle',btools:'battle'};
 function applyMode(m){
   MODE=m;
   try{localStorage.setItem('40k_mode',m);}catch(e){}
@@ -678,6 +685,8 @@ function showTab(t){
   if(t==='library')buildLibraryTab();
   if(t==='live')buildLiveTab();
   if(t==='bplan')buildBattlePlan();
+  if(t==='bduel')buildBattleDuel();
+  if(t==='btools')buildBattleTools();
   // Charts created while their tab was hidden (display:none) measure 0x0 and a plain
   // .resize() doesn't reliably recover — recreate them now that the tab is visible.
   if(t==='stats')renderStatsCharts();
@@ -2162,14 +2171,14 @@ function startLiveGame(){
     round:1, myCP:1, oppCP:1, myVP:0, oppVP:0
   };
   saveLive();
-  buildLiveTab();
+  showTab('bplan'); // straight to the matchup board — the point of the setup
 }
 
 function endLiveGame(){
   if(!confirm('End this live game? Tracked wounds/models are cleared (your saved Library rosters are untouched).'))return;
   LIVE=null;
   saveLive();
-  buildLiveTab();
+  showTab('live'); // back to the setup wizard
 }
 
 // ── Undo ────────────────────────────────────────────────────────────────────
@@ -2212,6 +2221,19 @@ function liveUnitByNumber(n){
   return null;
 }
 
+// Quick-entry pad: tap the models/wounds number to open a -5/-3/-2/-1/+1 pad —
+// losing 5 models is one tap instead of five. Stays open across re-renders
+// until dismissed or another number is tapped.
+let _quickPad=null;
+function toggleQuickPad(side,idx,stat){
+  _quickPad=(side&&!(_quickPad&&_quickPad.side===side&&_quickPad.idx===idx&&_quickPad.stat===stat))?{side,idx,stat}:null;
+  buildLiveTab();
+}
+function quickApply(side,idx,stat,delta){
+  if(stat==='wounds')liveAdjustWounds(side,idx,delta);
+  else liveAdjustModels(side,idx,delta);
+}
+
 function liveAdjustModels(side,idx,delta){
   pushUndo();
   const u=LIVE[side][idx];
@@ -2245,10 +2267,6 @@ function liveAdjustCP(side,delta){
 function liveAdjustVP(side,delta){
   LIVE[side]=Math.max(0,Math.min(100,(LIVE[side]??0)+delta));
   saveLive();buildLiveTab();
-}
-function toggleTurnChecklist(){
-  const c=document.getElementById('turn-checklist');
-  if(c)c.style.display=c.style.display==='none'?'block':'none';
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2352,6 +2370,9 @@ window.addEventListener('offline',()=>{if(LIVE&&document.getElementById('s-live'
 
 function buildLiveTab(){
   const el=document.getElementById('live-c');
+  // The Battle home doubles as setup (no game) and tracker (game running)
+  const tabBtn=document.getElementById('tab-live');
+  if(tabBtn)tabBtn.innerHTML=LIVE?'&#128203; Tracker':'&#9881; Setup';
   if(!LIVE){
     const lib=getLibrary();
     let srcOptions='';
@@ -2420,16 +2441,21 @@ function buildLiveTab(){
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:11px;color:var(--text3)">
         <div style="display:flex;align-items:center;gap:6px">Models
           <button class="btn stepper-btn" onclick="liveAdjustModels('${side}',${idx},-1)">&minus;</button>
-          <strong style="color:var(--text);min-width:34px;text-align:center;display:inline-block">${models}/${maxModels}</strong>
+          <button class="qty-btn" onclick="toggleQuickPad('${side}',${idx},'models')" title="Quick entry: lose several models at once">${models}/${maxModels}</button>
           <button class="btn stepper-btn" onclick="liveAdjustModels('${side}',${idx},1)">+</button>
         </div>
         <div style="display:flex;align-items:center;gap:6px">Wounds
           <button class="btn stepper-btn" onclick="liveAdjustWounds('${side}',${idx},-1)">&minus;</button>
-          <strong style="color:var(--text);min-width:34px;text-align:center;display:inline-block">${curW}/${u.profile.w}</strong>
+          <button class="qty-btn" onclick="toggleQuickPad('${side}',${idx},'wounds')" title="Quick entry: lose several wounds at once">${curW}/${u.profile.w}</button>
           <button class="btn stepper-btn" onclick="liveAdjustWounds('${side}',${idx},1)">+</button>
         </div>
         <button class="btn stepper-btn" style="margin-left:auto" onclick="liveResetUnit('${side}',${idx})">&#8634; Reset</button>
       </div>
+      ${_quickPad&&_quickPad.side===side&&_quickPad.idx===idx?`<div class="quick-pad">
+        <span style="font-size:10px;color:var(--text3)">${_quickPad.stat==='wounds'?'Wounds':'Models'}:</span>
+        ${[-5,-3,-2,-1,1].map(d=>`<button class="btn stepper-btn" onclick="quickApply('${side}',${idx},'${_quickPad.stat}',${d})">${d>0?'+':''}${d}</button>`).join('')}
+        <button class="btn stepper-btn" onclick="toggleQuickPad(null)" title="Close">&#10005;</button>
+      </div>`:''}
     </div>`;
   };
   // Destroyed units sink to the bottom of their column (display order only —
@@ -2437,11 +2463,6 @@ function buildLiveTab(){
   const columnOrder=units=>units.map((u,i)=>({u,i})).sort((a,b)=>(a.u._live.modelsLeft<=0?1:0)-(b.u._live.modelsLeft<=0?1:0));
   const myCol=columnOrder(LIVE.myUnits).map(({u,i})=>renderUnit(u,'myUnits',i)).join('');
   const oppCol=columnOrder(LIVE.oppUnits).map(({u,i})=>renderUnit(u,'oppUnits',i)).join('');
-  // Quick-added reference units (see liveAddOppUnit) carry accurate defensive
-  // stats but no weapon loadout — that only comes from parsed roster text — so
-  // they're excluded from the attacker list (would always show 0 damage).
-  const hasWeapons=u=>getAllWpn(u).some(w=>w&&w.s);
-  const dueOptions=(prefix,units,attackerOnly)=>units.map((u,i)=>({u,i})).filter(({u})=>!attackerOnly||hasWeapons(u)).map(({u,i})=>`<option value="${prefix}:${i}">${prefix==='myUnits'?'Me':'Opp'}: ${u.name} (${u._live.modelsLeft}/${u._live.startModels})</option>`).join('');
   const counter=(label,val,fn,color)=>`<div style="display:flex;align-items:center;gap:6px">
         <span style="font-size:11px;color:var(--text3);min-width:44px">${label}</span>
         <button class="btn stepper-btn" onclick="${fn}(-1)">&minus;</button>
@@ -2455,7 +2476,6 @@ function buildLiveTab(){
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button class="btn" onclick="liveUndo()" title="Undo the last casualty / counter change">&#8630; Undo</button>
           ${voiceSupported()?`<button class="btn" id="voice-btn" onclick="toggleVoice()"${navigator.onLine?'':' disabled title="Voice needs a network connection"'}>&#127908; Voice</button>`:''}
-          <button class="btn" onclick="toggleTurnChecklist()" title="Phase-by-phase turn reminder">&#9776; Turn checklist</button>
           <button class="btn" onclick="endLiveGame()">End Game</button>
         </div>
       </div>
@@ -2476,14 +2496,6 @@ function buildLiveTab(){
           ${counter('CP',LIVE.oppCP??1,"(d=>liveAdjustCP('oppCP',d))")}
           ${counter('VP',LIVE.oppVP??0,"(d=>liveAdjustVP('oppVP',d))",'var(--c-green)')}
         </div>
-      </div>
-      <div id="turn-checklist" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11px;color:var(--text2);line-height:1.7">
-        <strong style="color:var(--text)">Command</strong> — gain 1 CP · Battle-shock tests for units below half · use Command-phase strats (Oath of Moment)<br>
-        <strong style="color:var(--text)">Movement</strong> — Move / Advance (+D6", no charge) / Fall Back · declare Reserves arriving<br>
-        <strong style="color:var(--text)">Shooting</strong> — pick targets, don't forget LETHAL/SUSTAINED/DEVASTATING · Overwatch is the opponent's option<br>
-        <strong style="color:var(--text)">Charge</strong> — declare, roll 2D6 ≥ distance · Heroic Intervention is the opponent's option<br>
-        <strong style="color:var(--text)">Fight</strong> — Fights First units, then alternate · pile in 3" / consolidate 3"<br>
-        <strong style="color:var(--text)">End</strong> — score secondaries · check primary at your Command phase
       </div>
     </div>
     <div class="live-armies-grid">
@@ -2515,22 +2527,37 @@ function buildLiveTab(){
           <p style="font-size:10px;color:var(--text3);margin-top:6px">Quick-added units have accurate defensive stats (wounds/save/toughness) but no weapon loadout, so they can be targeted but won't show up as an attacker — paste their list instead if you need them to attack.</p>
         </div>
       </div>
+    </div>`;
+  buildLiveAddUnitOptions();
+}
+
+// ── Battle / Duel ─────────────────────────────────────────────────────────────
+function buildBattleDuel(){
+  const el=document.getElementById('bduel-c');
+  if(!LIVE){el.innerHTML=`<div class="empty">No active battle — <button class="btn primary" onclick="showTab('live')">set one up</button></div>`;return;}
+  const hasWeapons=u=>getAllWpn(u).some(w=>w&&w.s);
+  const dueOptions=(prefix,units,attackerOnly)=>units.map((u,i)=>({u,i})).filter(({u})=>!attackerOnly||hasWeapons(u)).map(({u,i})=>`<option value="${prefix}:${i}">${prefix==='myUnits'?'Me':'Opp'}: ${u.name} (${u._live.modelsLeft}/${u._live.startModels})</option>`).join('');
+  el.innerHTML=`<div class="card">
+    <h3>Duel calculator</h3>
+    <div class="f2">
+      <div class="fg"><label>Attacker</label><select id="live-sel-atk">${dueOptions('myUnits',LIVE.myUnits,true)}${dueOptions('oppUnits',LIVE.oppUnits,true)}</select></div>
+      <div class="fg"><label>Target <button class="btn" style="padding:1px 8px;font-size:11px;margin-left:6px" onclick="liveSwapDuel()" title="Swap attacker and target">&#8644; Swap</button></label><select id="live-sel-def">${dueOptions('oppUnits',LIVE.oppUnits)}${dueOptions('myUnits',LIVE.myUnits)}</select></div>
     </div>
-    <div class="card" style="margin-top:1rem">
-      <h3>Duel calculator</h3>
-      <div class="f2">
-        <div class="fg"><label>Attacker</label><select id="live-sel-atk">${dueOptions('myUnits',LIVE.myUnits,true)}${dueOptions('oppUnits',LIVE.oppUnits,true)}</select></div>
-        <div class="fg"><label>Target <button class="btn" style="padding:1px 8px;font-size:11px;margin-left:6px" onclick="liveSwapDuel()" title="Swap attacker and target">&#8644; Swap</button></label><select id="live-sel-def">${dueOptions('oppUnits',LIVE.oppUnits)}${dueOptions('myUnits',LIVE.myUnits)}</select></div>
-      </div>
-      ${liveTogglesHtml()}
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn primary" onclick="runLiveDuel()">Calculate</button>
-        <button class="btn" onclick="runLiveTargetPriority()" title="Expected damage from the selected attacker against every enemy unit at once">&#127919; What can I kill?</button>
-        <button class="btn" onclick="runLiveIncomingThreats()" title="Which enemy units threaten the selected MY unit, worst first">&#128737; What threatens me?</button>
-      </div>
-      <div id="live-duel-result" style="margin-top:12px"></div>
+    ${liveTogglesHtml()}
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn primary" onclick="runLiveDuel()">Calculate</button>
+      <button class="btn" onclick="runLiveTargetPriority()" title="Expected damage from the selected attacker against every enemy unit at once">&#127919; What can I kill?</button>
+      <button class="btn" onclick="runLiveIncomingThreats()" title="Which enemy units threaten the selected MY unit, worst first">&#128737; What threatens me?</button>
     </div>
-    <div class="card" style="margin-top:1rem">
+    <div id="live-duel-result" style="margin-top:12px"></div>
+  </div>`;
+}
+
+// ── Battle / Tools ────────────────────────────────────────────────────────────
+function buildBattleTools(){
+  const el=document.getElementById('btools-c');
+  if(!LIVE){el.innerHTML=`<div class="empty">No active battle — <button class="btn primary" onclick="showTab('live')">set one up</button></div>`;return;}
+  el.innerHTML=`<div class="card">
       <h3>Charge &amp; utility</h3>
       <div class="f2">
         <div class="fg"><label>Charge distance (inches)</label>
@@ -2545,8 +2572,18 @@ function buildLiveTab(){
         <button class="btn" onclick="runGrenadeCalc()" title="Grenade stratagem: 6 dice, each 4+ = 1 mortal wound">&#128163; Grenade strat</button>
       </div>
       <div id="live-util-result" style="font-size:12px;color:var(--text2)"></div>
+    </div>
+    <div class="card">
+      <h3>Turn checklist</h3>
+      <div style="font-size:11px;color:var(--text2);line-height:1.7">
+        <strong style="color:var(--text)">Command</strong> — gain 1 CP · Battle-shock tests for units below half · use Command-phase strats (Oath of Moment)<br>
+        <strong style="color:var(--text)">Movement</strong> — Move / Advance (+D6", no charge) / Fall Back · declare Reserves arriving<br>
+        <strong style="color:var(--text)">Shooting</strong> — pick targets, don't forget LETHAL/SUSTAINED/DEVASTATING · Overwatch is the opponent's option<br>
+        <strong style="color:var(--text)">Charge</strong> — declare, roll 2D6 ≥ distance · Heroic Intervention is the opponent's option<br>
+        <strong style="color:var(--text)">Fight</strong> — Fights First units, then alternate · pile in 3" / consolidate 3"<br>
+        <strong style="color:var(--text)">End</strong> — score secondaries · check primary at your Command phase
+      </div>
     </div>`;
-  buildLiveAddUnitOptions();
   runChargeCalc();
 }
 
@@ -2872,7 +2909,7 @@ function buildBattlePlan(){
 
 // Jump from a Plan chip to the full duel with the pair preselected
 function openDuelPair(atkSide,ai,defSide,di){
-  showTab('live');
+  showTab('bduel');
   const atkSel=document.getElementById('live-sel-atk'),defSel=document.getElementById('live-sel-def');
   if(!atkSel||!defSel)return;
   atkSel.value=atkSide+':'+ai;
