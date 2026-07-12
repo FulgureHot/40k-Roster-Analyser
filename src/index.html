@@ -285,7 +285,7 @@ shooting for 1 CP.</div></div><div class="det-card"><div class="det-card-name"> 
           <summary style="font-size:11px;color:var(--text3);cursor:pointer">How to create the token (once, ~2 min)</summary>
           <ol style="font-size:11px;color:var(--text3);margin:6px 0 0 18px;line-height:1.8">
             <li>GitHub → your avatar → <strong>Settings</strong> → <strong>Developer settings</strong> → <strong>Personal access tokens → Fine-grained tokens</strong> → Generate new token</li>
-            <li><strong>Repository access</strong>: "Only select repositories" → <code>40k-Roster-Analyser</code> uniquement</li>
+            <li><strong>Repository access</strong>: "Only select repositories" → <code>roster-dataslate</code> uniquement</li>
             <li><strong>Permissions → Repository → Contents</strong>: <strong>Read and write</strong> (rien d'autre)</li>
             <li>Expiration : 1 an · Generate, puis colle le token ci-dessus <strong>sur chaque appareil</strong></li>
           </ol>
@@ -2283,7 +2283,7 @@ function libSaveNote(id){
 // NOTE: the repo is public, so synced lists are public. The token is write
 // access to this one repo's contents — keep it out of the repo itself.
 // ══════════════════════════════════════════════════════════════════════════════
-const GH_OWNER='FulgureHot', GH_REPO='40k-Roster-Analyser', GH_BRANCH='library-data', GH_FILE='library.json';
+const GH_OWNER='FulgureHot', GH_REPO='roster-dataslate', GH_BRANCH='library-data', GH_FILE='library.json';
 const GH_TOKEN_KEY='40k_gh_token', TOMB_KEY='40k_lib_tombstones', SYNC_DIRTY_KEY='40k_sync_dirty';
 const TOMB_MAX_AGE=90*24*3600*1000; // prune tombstones older than 90 days
 let _syncStatus={state:'off',msg:'',at:null};
