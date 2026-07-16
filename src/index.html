@@ -2741,10 +2741,52 @@ function quickApply(side,idx,stat,delta){
   else liveAdjustModels(side,idx,delta);
 }
 
+// ── Battle log ───────────────────────────────────────────────────────────────
+// Timestamped per-round record of every casualty entry — lets you verify
+// per-round secondaries (Bring It Down...) and reread the game afterwards.
+// Consecutive taps on the same unit+stat in the same round within a short
+// window coalesce into one line, so -1 -1 -1 reads as one "-3" entry.
+const LIVE_LOG_CAP=200, LOG_COALESCE_MS=8000;
+function liveLog(side,idx,stat,delta,after){
+  if(!delta)return;
+  LIVE.log=LIVE.log||[];
+  const u=LIVE[side][idx];
+  const key=`${side}:${idx}:${stat}`;
+  const last=LIVE.log[LIVE.log.length-1];
+  if(last&&last.key===key&&last.round===LIVE.round&&Date.now()-last.at<LOG_COALESCE_MS){
+    last.delta+=delta;last.after=after;last.at=Date.now();
+    if(!last.delta)LIVE.log.pop(); // net zero (mis-tap corrected) — drop the line
+  }else{
+    LIVE.log.push({key,round:LIVE.round,at:Date.now(),name:`U${liveUnitNumber(side,idx)} ${u.name}`,mine:side==='myUnits',stat,delta,after});
+    if(LIVE.log.length>LIVE_LOG_CAP)LIVE.log.shift();
+  }
+}
+function liveLogCardHtml(){
+  const log=LIVE.log||[];
+  if(!log.length)return '';
+  const lines=[...log].reverse().map(e=>{
+    const sign=e.delta>0?'+':'';
+    const color=e.delta<0?'var(--c-red-lt)':'var(--c-green)';
+    return `<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)">
+      <span style="color:var(--text3)">R${e.round}</span>
+      <span style="color:${e.mine?'var(--c-blue)':'var(--c-red-lt)'};font-size:9px;font-weight:700">${e.mine?'ME':'OPP'}</span>
+      <span style="color:var(--text2)">${e.name}</span>
+      <strong style="color:${color}">${sign}${e.delta} ${e.stat==='wounds'?'W':'models'}</strong>
+      <span style="color:var(--text3)">&rarr; ${e.after}</span>
+    </div>`;
+  }).join('');
+  return `<div class="card"><details>
+    <summary style="font-size:13px;font-weight:700;cursor:pointer">&#128220; Battle log <span style="font-weight:400;color:var(--text3);font-size:11px">(${log.length} entr${log.length>1?'ies':'y'})</span></summary>
+    <div style="margin-top:6px;max-height:260px;overflow-y:auto">${lines}</div>
+  </details></div>`;
+}
+
 function liveAdjustModels(side,idx,delta){
   pushUndo();
   const u=LIVE[side][idx];
+  const before=u._live.modelsLeft;
   u._live.modelsLeft=Math.max(0,Math.min(u._live.startModels,u._live.modelsLeft+delta));
+  liveLog(side,idx,'models',u._live.modelsLeft-before,`${u._live.modelsLeft}/${u._live.startModels}`);
   saveLive();buildLiveTab();
 }
 function liveAdjustWounds(side,idx,delta){
@@ -2755,6 +2797,8 @@ function liveAdjustWounds(side,idx,delta){
   let next=cur+delta;
   if(next>=maxW)next=null;else if(next<0)next=0;
   u._live.curWounds=next;
+  const now=next==null?maxW:next;
+  liveLog(side,idx,'wounds',now-cur,`${now}/${maxW}W`);
   saveLive();buildLiveTab();
 }
 function liveResetUnit(side,idx){
@@ -3059,6 +3103,7 @@ function buildLiveTab(){
       </div>
     </div>
     ${liveScoreCardHtml()}
+    ${liveLogCardHtml()}
     <div class="live-armies-grid">
       <div><div class="section-header">My Army</div>${myCol}</div>
       <div>
